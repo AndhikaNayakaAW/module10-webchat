@@ -71,3 +71,26 @@ After login you’re redirected to **http://localhost:8000/chat**:
 4. The Yew UI updates in real time, adding a new chat bubble for each incoming message.
 
 ---
+## 3.2 · Experiment 3.2: Be Creative!
+
+> **Add some creativity to the WebClient**  
+> In this step, you’re free to redesign, extend, or embellish the Yew chat UI however you like. We’ll add a new colour theme, a “Stay creative” banner, custom icons, and a few fun messages to spark imagination.
+
+---
+![Chat interface New Design](static/design.png)
+
+### 1. What I Did
+
+- **Theme overhaul**  
+  – Soft purples for sidebar & header  
+  – Fresh greens for “my” bubbles  
+  – Indigo send button with hover effect
+- **“Stay creative” banner**  
+  A little prompt under the header to encourage imaginative chat
+- **Custom header icon**  
+  Replaced plain “Chat!” with a 🎨 paint-palette emoji
+- **Bubble styling**  
+  – My messages right-aligned in green  
+  – Others’ messages left-aligned in purple, with avatars
+- **Smooth transitions**  
+  Hover states on user cards & send button

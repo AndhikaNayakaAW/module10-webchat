@@ -45,7 +45,9 @@ pub struct Chat {
     _producer: Box<dyn Bridge<EventBus>>,
     wss: WebsocketService,
     messages: Vec<MessageData>,
+    current_user: String,
 }
+
 impl Component for Chat {
     type Message = Msg;
     type Properties = ();
@@ -58,18 +60,18 @@ impl Component for Chat {
         let wss = WebsocketService::new();
         let username = user.username.borrow().clone();
 
-        let message = WebSocketMessage {
+        // register with server
+        let register_msg = WebSocketMessage {
             message_type: MsgTypes::Register,
-            data: Some(username.to_string()),
+            data: Some(username.clone()),
             data_array: None,
         };
-
         if let Ok(_) = wss
             .tx
             .clone()
-            .try_send(serde_json::to_string(&message).unwrap())
+            .try_send(serde_json::to_string(&register_msg).unwrap())
         {
-            log::debug!("message sent successfully");
+            log::debug!("registered user {}", username);
         }
 
         Self {
@@ -78,125 +80,140 @@ impl Component for Chat {
             chat_input: NodeRef::default(),
             wss,
             _producer: EventBus::bridge(ctx.link().callback(Msg::HandleMsg)),
+            current_user: username,
         }
     }
 
     fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            Msg::HandleMsg(s) => {
-                let msg: WebSocketMessage = serde_json::from_str(&s).unwrap();
+            Msg::HandleMsg(raw) => {
+                let msg: WebSocketMessage = serde_json::from_str(&raw).unwrap();
                 match msg.message_type {
                     MsgTypes::Users => {
-                        let users_from_message = msg.data_array.unwrap_or_default();
-                        self.users = users_from_message
-                            .iter()
+                        let list = msg.data_array.unwrap_or_default();
+                        self.users = list
+                            .into_iter()
                             .map(|u| UserProfile {
-                                name: u.into(),
+                                name: u.clone(),
                                 avatar: format!(
                                     "https://avatars.dicebear.com/api/adventurer-neutral/{}.svg",
                                     u
-                                )
-                                    .into(),
+                                ),
                             })
                             .collect();
-                        return true;
+                        true
                     }
                     MsgTypes::Message => {
-                        let message_data: MessageData =
-                            serde_json::from_str(&msg.data.unwrap()).unwrap();
-                        self.messages.push(message_data);
-                        return true;
+                        if let Some(data) = msg.data {
+                            let md: MessageData = serde_json::from_str(&data).unwrap();
+                            self.messages.push(md);
+                            true
+                        } else {
+                            false
+                        }
                     }
-                    _ => {
-                        return false;
-                    }
+                    _ => false,
                 }
             }
             Msg::SubmitMessage => {
-                let input = self.chat_input.cast::<HtmlInputElement>();
-                if let Some(input) = input {
-                    let message = WebSocketMessage {
-                        message_type: MsgTypes::Message,
-                        data: Some(input.value()),
-                        data_array: None,
-                    };
-                    if let Err(e) = self
-                        .wss
-                        .tx
-                        .clone()
-                        .try_send(serde_json::to_string(&message).unwrap())
-                    {
-                        log::debug!("error sending to channel: {:?}", e);
+                if let Some(input) = self.chat_input.cast::<HtmlInputElement>() {
+                    let val = input.value();
+                    if !val.trim().is_empty() {
+                        let outgoing = WebSocketMessage {
+                            message_type: MsgTypes::Message,
+                            data: Some(val.clone()),
+                            data_array: None,
+                        };
+                        if let Err(e) =
+                            self.wss.tx.clone().try_send(serde_json::to_string(&outgoing).unwrap())
+                        {
+                            log::error!("send error: {:?}", e);
+                        }
+                        input.set_value("");
                     }
-                    input.set_value("");
-                };
+                }
                 false
             }
         }
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        let submit = ctx.link().callback(|_| Msg::SubmitMessage);
+        let send_cb = ctx.link().callback(|_| Msg::SubmitMessage);
 
         html! {
-            <div class="flex w-screen">
-                <div class="flex-none w-56 h-screen bg-gray-100">
-                    <div class="text-xl p-3">{"Users"}</div>
-                    {
-                        self.users.clone().iter().map(|u| {
-                            html!{
-                                <div class="flex m-3 bg-white rounded-lg p-2">
-                                    <div>
-                                        <img class="w-12 h-12 rounded-full" src={u.avatar.clone()} alt="avatar"/>
-                                    </div>
-                                    <div class="flex-grow p-3">
-                                        <div class="flex text-xs justify-between">
-                                            <div>{u.name.clone()}</div>
-                                        </div>
-                                        <div class="text-xs text-gray-400">
-                                            {"Hi there!"}
-                                        </div>
-                                    </div>
-                                </div>
-                            }
-                        }).collect::<Html>()
-                    }
+            <div class="flex w-screen h-screen">
+                // — Sidebar: user list
+                <div class="flex-none w-64 bg-purple-50 p-4 overflow-auto">
+                    <h2 class="text-2xl font-bold text-purple-800 mb-4">{"👥 Users"}</h2>
+                    { for self.users.iter().map(|u| html!{
+                        <div class="flex items-center mb-3 bg-purple-100 rounded-lg p-2 hover:bg-purple-200 transition">
+                            <img class="w-10 h-10 rounded-full" src={u.avatar.clone()} alt="avatar"/>
+                            <span class="ml-3 text-purple-700">{ &u.name }</span>
+                        </div>
+                    }) }
                 </div>
-                <div class="grow h-screen flex flex-col">
-                    <div class="w-full h-14 border-b-2 border-gray-300"><div class="text-xl p-3">{"💬 Chat!"}</div></div>
-                    <div class="w-full grow overflow-auto border-b-2 border-gray-300">
-                        {
-                            self.messages.iter().map(|m| {
-                                let user = self.users.iter().find(|u| u.name == m.from).unwrap();
+
+                // — Main chat area
+                <div class="flex-grow flex flex-col bg-white">
+                    // Header
+                    <header class="h-16 flex items-center bg-purple-200 px-6">
+                        <h1 class="text-xl font-semibold text-purple-900">{"🎨 Creative Chat"}</h1>
+                    </header>
+
+                    // Creativity banner
+                    <div class="px-6 py-2 bg-purple-50 text-purple-800 text-center">
+                        {"💡 Stay creative: share your imagination!"}
+                    </div>
+
+                    // Messages
+                    <div class="flex-grow overflow-auto p-6 space-y-4">
+                        { for self.messages.iter().map(|m| {
+                            if m.from == self.current_user {
                                 html!{
-                                    <div class="flex items-end w-3/6 bg-gray-100 m-8 rounded-tl-lg rounded-tr-lg rounded-br-lg ">
-                                        <img class="w-8 h-8 rounded-full m-3" src={user.avatar.clone()} alt="avatar"/>
-                                        <div class="p-3">
-                                            <div class="text-sm">
-                                                {m.from.clone()}
-                                            </div>
-                                            <div class="text-xs text-gray-500">
-                                                if m.message.ends_with(".gif") {
-                                                    <img class="mt-3" src={m.message.clone()}/>
-                                                } else {
-                                                    {m.message.clone()}
-                                                }
-                                            </div>
+                                    <div class="flex justify-end">
+                                        <div class="max-w-md px-4 py-2 bg-green-200 rounded-tl-lg rounded-tr-lg rounded-bl-lg text-gray-800">
+                                            { m.message.clone() }
                                         </div>
                                     </div>
                                 }
-                            }).collect::<Html>()
-                        }
-
+                            } else {
+                                let avatar = self
+                                    .users
+                                    .iter()
+                                    .find(|u| u.name == m.from)
+                                    .map(|u| u.avatar.clone())
+                                    .unwrap_or_default();
+                                html!{
+                                    <div class="flex items-start">
+                                        <img class="w-8 h-8 rounded-full mr-3" src={avatar} alt="avatar"/>
+                                        <div class="max-w-md px-4 py-2 bg-purple-200 rounded-tr-lg rounded-br-lg rounded-bl-lg text-gray-800">
+                                            <strong>{ format!("{}: ", m.from) }</strong>
+                                            { m.message.clone() }
+                                        </div>
+                                    </div>
+                                }
+                            }
+                        }) }
                     </div>
-                    <div class="w-full h-14 flex px-3 items-center">
-                        <input ref={self.chat_input.clone()} type="text" placeholder="Message" class="block w-full py-2 pl-4 mx-3 bg-gray-100 rounded-full outline-none focus:text-gray-700" name="message" required=true />
-                        <button onclick={submit} class="p-3 shadow-sm bg-blue-600 w-10 h-10 rounded-full flex justify-center items-center color-white">
-                            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" class="fill-white">
-                                <path d="M0 0h24v24H0z" fill="none"></path><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
+
+                    // Input bar
+                    <footer class="h-16 flex items-center px-6 bg-purple-50">
+                        <input
+                            ref={self.chat_input.clone()}
+                            type="text"
+                            placeholder="Type a message..."
+                            class="flex-grow px-4 py-2 bg-white border border-purple-200 rounded-full outline-none focus:border-purple-400"
+                        />
+                        <button
+                            onclick={send_cb}
+                            class="ml-4 p-3 bg-indigo-600 rounded-full hover:bg-indigo-700 transition shadow-lg"
+                        >
+                            <svg class="w-6 h-6 fill-white" viewBox="0 0 24 24">
+                                <path d="M0 0h24v24H0z" fill="none"/>
+                                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
                             </svg>
                         </button>
-                    </div>
+                    </footer>
                 </div>
             </div>
         }
